@@ -335,7 +335,18 @@ async function initCamera() {
     handLandmarker = await attempt("GPU", 25000);
   } catch (e1) {
     setStatus("GPU 初始化超时，改用 CPU 重试（会慢一些）…");
-    handLandmarker = await attempt("CPU", 45000);
+    try {
+      handLandmarker = await attempt("CPU", 45000);
+    } catch (e2) {
+      if (modelUrl !== "./models/hand_landmarker.task") {
+        // 下载到的内容可能不完整，退回让框架自己按 URL 取
+        modelUrl = "./models/hand_landmarker.task";
+        setStatus("改用原始地址加载模型…");
+        handLandmarker = await attempt("CPU", 45000);
+      } else {
+        throw e2;
+      }
+    }
   }
 
   setStatus("");
