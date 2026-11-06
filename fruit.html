@@ -36,6 +36,8 @@
   #hud button { background: #2563eb; color: #fff; border: 0; border-radius: 10px;
                 padding: 12px 26px; font-size: 16px; cursor: pointer; }
   #hud button:disabled { opacity: .5; cursor: default; }
+  #hud button.ghost { background: #222a36; color: #cbd5e3; }
+  #hud button.hidden { display: none; }
   #hud .score { font-size: 54px; font-weight: 700; color: #4ade80; font-variant-numeric: tabular-nums; }
   #hint { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
           background: rgba(10, 14, 20, .82); border: 1px solid #263041; border-radius: 10px;
@@ -91,6 +93,7 @@
     <p id="hudMsg" style="color:#f59e0b;min-height:22px"></p>
     <div class="actions">
       <button id="hudStart">打开摄像头开始</button>
+      <button id="hudDemo" class="ghost hidden">鼠标演示（不识别手）</button>
     </div>
   </div>
   <div id="pause" class="hidden">
@@ -109,6 +112,7 @@ const ctx = canvas.getContext("2d");
 const hud = document.getElementById("hud");
 const hudMsg = document.getElementById("hudMsg");
 const hudStart = document.getElementById("hudStart");
+const hudDemo = document.getElementById("hudDemo");
 const startBtn = document.getElementById("startBtn");
 const scoreEl = document.getElementById("score");
 const comboEl = document.getElementById("combo");
@@ -262,6 +266,33 @@ async function initCamera() {
 
   hudMsg.textContent = "正在加载手势模型…";
   const fileset = await FilesetResolver.forVisionTasks("./wasm");
+
+  // 自己下载模型并显示进度：GitHub Pages 在国内可能很慢，也能避免框架内部静默卡住
+  let modelUrl = "./models/hand_landmarker.task";
+  try {
+    const res = await fetch("./models/hand_landmarker.task");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const total = Number(res.headers.get("content-length")) || 0;
+    const reader = res.body.getReader();
+    const chunks = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      got += value.length;
+      if (total) {
+        hudMsg.textContent = "正在下载手势模型 " + Math.round((got / total) * 100) + "%";
+      } else {
+        hudMsg.textContent = "正在下载手势模型 " + (got / 1048576).toFixed(1) + " MB";
+      }
+    }
+    modelUrl = URL.createObjectURL(new Blob(chunks, { type: "application/octet-stream" }));
+    hudMsg.textContent = "模型已下载，正在初始化…";
+  } catch (e) {
+    hudMsg.textContent = "模型下载受限，改为直接加载…";
+  }
+
   const opts = {
     runningMode: "VIDEO",
     numHands: 2,
@@ -269,17 +300,21 @@ async function initCamera() {
     minHandPresenceConfidence: 0.25,
     minTrackingConfidence: 0.25
   };
+  const attempt = (delegate, timeoutMs) => {
+    const p = HandLandmarker.createFromOptions(fileset, {
+      ...opts,
+      baseOptions: { modelAssetPath: modelUrl, delegate }
+    });
+    p.catch(() => {});
+    const timer = new Promise((_, rej) => setTimeout(
+      () => rej(new Error(delegate + " 初始化超过 " + Math.round(timeoutMs / 1000) + " 秒")), timeoutMs));
+    return Promise.race([p, timer]);
+  };
   try {
-    handLandmarker = await HandLandmarker.createFromOptions(fileset, {
-      ...opts,
-      baseOptions: { modelAssetPath: "./models/hand_landmarker.task", delegate: "GPU" }
-    });
-  } catch (e) {
-    // 某些浏览器 GPU 委派不可用，退回 CPU
-    handLandmarker = await HandLandmarker.createFromOptions(fileset, {
-      ...opts,
-      baseOptions: { modelAssetPath: "./models/hand_landmarker.task", delegate: "CPU" }
-    });
+    handLandmarker = await attempt("GPU", 30000);
+  } catch (e1) {
+    hudMsg.textContent = "GPU 初始化失败，改用 CPU 重试…";
+    handLandmarker = await attempt("CPU", 45000);
   }
 
   hudMsg.textContent = "";
@@ -785,16 +820,22 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-hudStart.onclick = () => {
+function startCamera() {
+  hudDemo.classList.add("hidden");
+  hudStart.disabled = true;
+  hudStart.textContent = "启动中…";
+  hudMsg.textContent = "";
   initCamera().catch(err => {
-    hudStart.disabled = false;
     const reason = err && err.message ? err.message : String(err);
-    hudMsg.textContent = "摄像头不可用：" + reason +
-      "。内置浏览器经常拿不到摄像头权限，请用 Safari 或 Chrome 打开 http://127.0.0.1:8790/fruit.html";
-    hudStart.textContent = "先用演示模式（鼠标，不识别手）";
-    hudStart.onclick = () => { location.href = "./fruit.html?demo=1"; };
+    hudMsg.textContent = "启动失败：" + reason;
+    hudStart.textContent = "重试";
+    hudStart.disabled = false;
+    hudDemo.classList.remove("hidden");
   });
-};
+}
+
+hudStart.onclick = startCamera;
+hudDemo.onclick = () => { location.href = "./fruit.html?demo=1"; };
 
 if (DEMO) initCamera().catch(() => {});
 </script>
