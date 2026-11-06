@@ -113,6 +113,20 @@ const hud = document.getElementById("hud");
 const hudMsg = document.getElementById("hudMsg");
 const hudStart = document.getElementById("hudStart");
 const hudDemo = document.getElementById("hudDemo");
+
+// 状态文案 + 卡住时显示已等待秒数
+let statusText = "";
+let statusStart = 0;
+function setStatus(t) {
+  statusText = t || "";
+  statusStart = performance.now();
+  hudMsg.textContent = statusText;
+}
+setInterval(() => {
+  if (!statusText) return;
+  const s = Math.floor((performance.now() - statusStart) / 1000);
+  if (s >= 3) hudMsg.textContent = statusText + "（已等待 " + s + " 秒）";
+}, 500);
 const startBtn = document.getElementById("startBtn");
 const scoreEl = document.getElementById("score");
 const comboEl = document.getElementById("combo");
@@ -249,7 +263,7 @@ async function initCamera() {
     return;
   }
   hudStart.disabled = true;
-  hudMsg.textContent = "正在启动摄像头…";
+  setStatus("正在启动摄像头…");
   const stream = await Promise.race([
     navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
@@ -264,7 +278,7 @@ async function initCamera() {
   resize();
   window.addEventListener("resize", resize);
 
-  hudMsg.textContent = "正在加载手势模型…";
+  setStatus("正在加载运行时（约 18MB，首次较慢）…");
   const fileset = await FilesetResolver.forVisionTasks("./wasm");
 
   // 自己下载模型并显示进度：GitHub Pages 在国内可能很慢，也能避免框架内部静默卡住
@@ -273,24 +287,31 @@ async function initCamera() {
     const res = await fetch("./models/hand_landmarker.task");
     if (!res.ok) throw new Error("HTTP " + res.status);
     const total = Number(res.headers.get("content-length")) || 0;
+    const compressed = (res.headers.get("content-encoding") || "identity") !== "identity";
     const reader = res.body.getReader();
     const chunks = [];
     let got = 0;
+    let lastShown = -1;
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       chunks.push(value);
       got += value.length;
-      if (total) {
-        hudMsg.textContent = "正在下载手势模型 " + Math.round((got / total) * 100) + "%";
+      const mb = got / 1048576;
+      if (mb - lastShown < 0.2 && !(total && got >= total)) continue;
+      lastShown = mb;
+      // 有压缩时 content-length 不等于解压后大小，只用 MB，绝不显示超过 100%
+      if (total && !compressed) {
+        const pct = Math.min(99, Math.round((got / total) * 100));
+        setStatus(`正在下载手势模型 ${mb.toFixed(1)} MB（${pct}%）`);
       } else {
-        hudMsg.textContent = "正在下载手势模型 " + (got / 1048576).toFixed(1) + " MB";
+        setStatus(`正在下载手势模型 ${mb.toFixed(1)} MB`);
       }
     }
     modelUrl = URL.createObjectURL(new Blob(chunks, { type: "application/octet-stream" }));
-    hudMsg.textContent = "模型已下载，正在初始化…";
+    setStatus(`模型已下载（${(got / 1048576).toFixed(1)} MB），正在初始化…`);
   } catch (e) {
-    hudMsg.textContent = "模型下载受限，改为直接加载…";
+    setStatus("模型下载受阻，改为直接加载…");
   }
 
   const opts = {
@@ -311,15 +332,15 @@ async function initCamera() {
     return Promise.race([p, timer]);
   };
   try {
-    handLandmarker = await attempt("GPU", 30000);
+    handLandmarker = await attempt("GPU", 25000);
   } catch (e1) {
-    hudMsg.textContent = "GPU 初始化失败，改用 CPU 重试…";
+    setStatus("GPU 初始化超时，改用 CPU 重试（会慢一些）…");
     handLandmarker = await attempt("CPU", 45000);
   }
 
-  hudMsg.textContent = "";
+  setStatus("");
   hud.querySelector("h1").textContent = "准备好了";
-  hud.querySelector("p").innerHTML = "把手掌举到镜头前 <b>挥动</b>，刀刃就是手掌的轨迹。<br>水果飞起来后切掉它们，别切炸弹。";
+  hud.querySelector("p").innerHTML = "手进入画面后会变成<b>发光圆点</b>，挥动它划过水果就能切开。<br>水果飞起来后切掉它们，别碰炸弹。";
   hud.querySelector(".tips").textContent = "站远一点，让手和身体都在画面里；光线越好追踪越稳。";
   hudStart.textContent = "开始游戏";
   hudStart.disabled = false;
@@ -824,7 +845,7 @@ function startCamera() {
   hudDemo.classList.add("hidden");
   hudStart.disabled = true;
   hudStart.textContent = "启动中…";
-  hudMsg.textContent = "";
+  setStatus("");
   initCamera().catch(err => {
     const reason = err && err.message ? err.message : String(err);
     hudMsg.textContent = "启动失败：" + reason;
