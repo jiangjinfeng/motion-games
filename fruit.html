@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>切水果 · 体感</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0b0e13; color: #e8ecf3; font: 15px/1.5 -apple-system, "PingFang SC", sans-serif;
+         height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; background: #12161d;
+           border-bottom: 1px solid #212836; flex: none; font-size: 14px; }
+  header .brand { font-weight: 600; }
+  header .spacer { flex: 1; }
+  header .stat { color: #8b97a8; font-variant-numeric: tabular-nums; }
+  header .stat b { color: #e8ecf3; font-size: 16px; }
+  header .lives { letter-spacing: 3px; font-size: 15px; }
+  header a { color: #6b7686; text-decoration: none; font-size: 13px; }
+  header a:hover { color: #cbd5e3; }
+  header button { background: #2563eb; color: #fff; border: 0; border-radius: 8px;
+                  padding: 7px 16px; font-size: 14px; cursor: pointer; }
+  header button:disabled { opacity: .45; cursor: default; }
+  header button.mute { background: #242a35; padding: 7px 10px; }
+  #stage { position: relative; flex: 1; overflow: hidden; background: #000; }
+  #video, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #video { object-fit: cover; transform: scaleX(-1); opacity: .45; }
+  #overlay { transform: scaleX(-1); }
+  #hud { position: absolute; inset: 0; display: flex; flex-direction: column;
+         align-items: center; justify-content: center; text-align: center; gap: 14px;
+         background: rgba(6, 9, 14, .84); backdrop-filter: blur(4px); padding: 24px; }
+  #hud.hidden { display: none; }
+  #hud h1 { font-size: 28px; font-weight: 700; }
+  #hud p { color: #9aa7b8; max-width: 500px; line-height: 1.75; }
+  #hud .tips { font-size: 13px; color: #6f7c8f; }
+  #hud .actions { display: flex; gap: 10px; margin-top: 6px; }
+  #hud button { background: #2563eb; color: #fff; border: 0; border-radius: 10px;
+                padding: 12px 26px; font-size: 16px; cursor: pointer; }
+  #hud button:disabled { opacity: .5; cursor: default; }
+  #hud .score { font-size: 54px; font-weight: 700; color: #4ade80; font-variant-numeric: tabular-nums; }
+  #hint { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+          background: rgba(10, 14, 20, .82); border: 1px solid #263041; border-radius: 10px;
+          padding: 8px 16px; font-size: 13px; color: #9aa7b8; white-space: nowrap; display: none; }
+  #hint.show { display: block; }
+  #track { position: absolute; left: 14px; bottom: 14px; font-size: 13px; padding: 6px 12px;
+           border-radius: 9px; background: rgba(10,14,20,.8); border: 1px solid #263041;
+           color: #f59e0b; }
+  #track.ok { color: #4ade80; border-color: rgba(74,222,128,.45); }
+  #demobar { position: absolute; top: 0; left: 0; right: 0; padding: 10px 16px; text-align: center;
+             background: rgba(245,158,11,.92); color: #1f1300; font-size: 14px; cursor: pointer;
+             z-index: 5; }
+  #demobar.hidden { display: none; }
+  #pause { position: absolute; inset: 0; display: flex; flex-direction: column;
+           align-items: center; justify-content: center; gap: 12px;
+           background: rgba(6, 9, 14, .78); backdrop-filter: blur(3px); }
+  #pause.hidden { display: none; }
+  #pause h2 { font-size: 30px; }
+  #pause p { color: #9aa7b8; font-size: 14px; }
+  #pause button { background: #2563eb; color: #fff; border: 0; border-radius: 10px;
+                  padding: 11px 30px; font-size: 16px; cursor: pointer; margin-top: 4px; }
+  #flash { position: absolute; inset: 0; background: #ef4444; opacity: 0; pointer-events: none;
+           transition: opacity .12s; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">切水果 · 体感</div>
+  <div class="spacer"></div>
+  <div class="stat">分数 <b id="score">0</b></div>
+  <div class="stat">连击 <b id="combo">0</b></div>
+  <div class="stat">FPS <b id="fps">-</b></div>
+  <a href="./index.html">接气球 →</a>
+  <button id="pauseBtn" disabled>暂停</button>
+  <button class="mute" id="fsBtn" title="全屏（F）">⛶</button>
+  <button class="mute" id="muteBtn" title="音效">🔊</button>
+  <button id="startBtn" disabled>开始</button>
+</header>
+
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="overlay"></canvas>
+  <div id="flash"></div>
+  <div id="demobar" class="hidden">当前是<b>鼠标演示模式</b>（不识别手） · <u>点这里切换到摄像头模式</u></div>
+  <div id="hint">没检测到手，把手抬到镜头前挥动</div>
+  <div id="track">未识别到手</div>
+  <div id="hud">
+    <h1>切水果</h1>
+    <p>手进入画面后会变成一个<b style="color:#7dd3fc">发光的亮点</b>，挥动它、划过水果就能切开。<br>
+       <b style="color:#4ade80">无限模式：不会自动结束</b>，随时可以暂停。<br>
+       炸弹扣 5 分并打断连击，漏掉水果只断连击。</p>
+    <p class="tips">站到离镜头 1~1.5 米，光线充足，手掌正对镜头挥动更灵敏。按空格暂停，按 F 全屏。</p>
+    <p id="hudMsg" style="color:#f59e0b;min-height:22px"></p>
+    <div class="actions">
+      <button id="hudStart">打开摄像头开始</button>
+    </div>
+  </div>
+  <div id="pause" class="hidden">
+    <h2>已暂停</h2>
+    <p>点「继续」或按空格恢复</p>
+    <button id="resumeBtn">继续</button>
+  </div>
+</div>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker } from "./vision_bundle.mjs";
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("overlay");
+const ctx = canvas.getContext("2d");
+const hud = document.getElementById("hud");
+const hudMsg = document.getElementById("hudMsg");
+const hudStart = document.getElementById("hudStart");
+const startBtn = document.getElementById("startBtn");
+const scoreEl = document.getElementById("score");
+const comboEl = document.getElementById("combo");
+const fpsEl = document.getElementById("fps");
+const pauseBtn = document.getElementById("pauseBtn");
+const pauseHud = document.getElementById("pause");
+const resumeBtn = document.getElementById("resumeBtn");
+const fsBtn = document.getElementById("fsBtn");
+const hint = document.getElementById("hint");
+const trackEl = document.getElementById("track");
+const demobar = document.getElementById("demobar");
+const flash = document.getElementById("flash");
+const muteBtn = document.getElementById("muteBtn");
+
+const TIPS = [4, 8, 12, 16, 20];
+const GRAVITY = 950;   // 越小飞得越慢，留更多挥刀时间
+
+// 演示模式：加 ?demo=1 打开，用鼠标当刀，不需要摄像头（也方便排查问题）
+const DEMO = new URLSearchParams(location.search).has("demo");
+const demo = { x: 0, y: 0, cx: 0, cy: 0, inside: false };
+if (DEMO) {
+  demobar.classList.remove("hidden");
+  demobar.onclick = () => { location.href = "./fruit.html"; };
+  window.addEventListener("mousemove", (e) => {
+    const dpr = DPR();
+    const r = canvas.getBoundingClientRect();
+    demo.x = e.clientX - r.left;
+    demo.y = e.clientY - r.top;
+    demo.cx = (r.width - demo.x) * dpr;  // 画布是镜像的，x 要翻过来
+    demo.cy = demo.y * dpr;
+    demo.inside = true;
+  });
+}
+
+let handLandmarker = null;
+let running = false;
+let lastVideoTime = -1;
+let lastHands = [];
+let lastFrame = null;
+let lastDetectAt = 0;
+let lastInferMs = 0;
+let fpsSmooth = 0;
+let prevTips = [];      // 每只手上一次指尖位置
+let trails = [[], []];  // 轨迹点 {x, y, t}
+let muted = false;
+
+const game = {
+  state: "idle",     // idle | playing | paused
+  score: 0, best: 0, combo: 0, comboTimer: 0,
+  shake: 0,
+  objects: [],   // {kind:'fruit'|'bomb', type, x, y, r, vx, vy, rot, vr}
+  halves: [],    // {x,y,vx,vy,rot,vr,r,type,dir}
+  particles: [],
+  spawnTimer: 0, spawnEvery: 1.7,
+  lastT: 0
+};
+
+const W = () => canvas.width;
+const H = () => canvas.height;
+const DPR = () => Math.min(window.devicePixelRatio || 1, 2);
+window.__game = game;   // 调试用
+
+const FRUITS = {
+  watermelon: { rind: "#2e7d32", flesh: "#ef4444", seed: "#3b1d1d" },
+  orange:     { rind: "#f59e0b", flesh: "#fb923c", seed: "#7c2d12" },
+  apple:      { rind: "#dc2626", flesh: "#fca5a5", seed: "#3f1d1d" },
+  lemon:      { rind: "#eab308", flesh: "#fde68a", seed: "#78350f" },
+  kiwi:       { rind: "#65a30d", flesh: "#a3e635", seed: "#1a2e05" }
+};
+const FRUIT_NAMES = Object.keys(FRUITS);
+
+// ---------- 音效（WebAudio 合成，无外部文件） ----------
+let audio = null;
+function ac() {
+  if (!audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  return audio;
+}
+function beep(type) {
+  if (muted) return;
+  const a = ac(); if (!a) return;
+  const now = a.currentTime;
+  if (type === "slice") {
+    const buf = a.createBuffer(1, 1024, a.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) ** 2;
+    const src = a.createBufferSource(); src.buffer = buf;
+    const f = a.createBiquadFilter(); f.type = "highpass"; f.frequency.value = 1200;
+    const g = a.createGain(); g.gain.value = 0.25;
+    src.connect(f).connect(g).connect(a.destination); src.start(now);
+  } else if (type === "bomb") {
+    const o = a.createOscillator(); o.type = "sawtooth";
+    o.frequency.setValueAtTime(160, now);
+    o.frequency.exponentialRampToValueAtTime(40, now + 0.5);
+    const g = a.createGain(); g.gain.setValueAtTime(0.35, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+    o.connect(g).connect(a.destination); o.start(now); o.stop(now + 0.6);
+  } else if (type === "miss") {
+    const o = a.createOscillator(); o.type = "triangle";
+    o.frequency.setValueAtTime(300, now);
+    o.frequency.exponentialRampToValueAtTime(150, now + 0.2);
+    const g = a.createGain(); g.gain.setValueAtTime(0.2, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+    o.connect(g).connect(a.destination); o.start(now); o.stop(now + 0.25);
+  }
+}
+muteBtn.onclick = () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? "🔇" : "🔊";
+};
+
+// ---------- 画面映射 ----------
+function resize() {
+  const r = document.getElementById("stage").getBoundingClientRect();
+  const dpr = DPR();
+  canvas.width = Math.round(r.width * dpr);
+  canvas.height = Math.round(r.height * dpr);
+}
+function videoMap() {
+  const sw = W(), sh = H();
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const scale = Math.max(sw / vw, sh / vh);
+  const w = vw * scale, h = vh * scale;
+  return { ox: (sw - w) / 2, oy: (sh - h) / 2, w, h };
+}
+
+// ---------- 初始化 ----------
+async function initCamera() {
+  if (DEMO) {
+    resize();
+    window.addEventListener("resize", resize);
+    hud.classList.add("hidden");
+    startLoop();
+    startGame();
+    return;
+  }
+  hudStart.disabled = true;
+  hudMsg.textContent = "正在启动摄像头…";
+  const stream = await Promise.race([
+    navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+      audio: false
+    }),
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error("等待摄像头授权超时，可能被浏览器拦截，请点地址栏的摄像头图标允许访问")),
+      20000))
+  ]);
+  video.srcObject = stream;
+  await video.play();
+  resize();
+  window.addEventListener("resize", resize);
+
+  hudMsg.textContent = "正在加载手势模型…";
+  const fileset = await FilesetResolver.forVisionTasks("./wasm");
+  const opts = {
+    runningMode: "VIDEO",
+    numHands: 2,
+    minHandDetectionConfidence: 0.25,
+    minHandPresenceConfidence: 0.25,
+    minTrackingConfidence: 0.25
+  };
+  try {
+    handLandmarker = await HandLandmarker.createFromOptions(fileset, {
+      ...opts,
+      baseOptions: { modelAssetPath: "./models/hand_landmarker.task", delegate: "GPU" }
+    });
+  } catch (e) {
+    // 某些浏览器 GPU 委派不可用，退回 CPU
+    handLandmarker = await HandLandmarker.createFromOptions(fileset, {
+      ...opts,
+      baseOptions: { modelAssetPath: "./models/hand_landmarker.task", delegate: "CPU" }
+    });
+  }
+
+  hudMsg.textContent = "";
+  hud.querySelector("h1").textContent = "准备好了";
+  hud.querySelector("p").innerHTML = "把手掌举到镜头前 <b>挥动</b>，刀刃就是手掌的轨迹。<br>水果飞起来后切掉它们，别切炸弹。";
+  hud.querySelector(".tips").textContent = "站远一点，让手和身体都在画面里；光线越好追踪越稳。";
+  hudStart.textContent = "开始游戏";
+  hudStart.disabled = false;
+  hudStart.onclick = startGame;
+  startBtn.disabled = false;
+  startLoop();
+}
+
+// ---------- 游戏流程 ----------
+function startGame() {
+  game.state = "playing";
+  game.score = 0; game.combo = 0; game.comboTimer = 0; game.best = 0;
+  game.shake = 0;
+  game.objects = []; game.halves = []; game.particles = [];
+  game.spawnTimer = 0; game.spawnEvery = 1.7;
+  trails = [[], []]; prevTips = [];
+  hud.classList.add("hidden");
+  pauseHud.classList.add("hidden");
+  pauseBtn.textContent = "暂停";
+  pauseBtn.disabled = false;
+  startBtn.textContent = "重新开始";
+  game.lastT = performance.now() / 1000;
+  updateHud();
+}
+
+function togglePause() {
+  if (game.state === "playing") {
+    game.state = "paused";
+    pauseHud.classList.remove("hidden");
+    pauseBtn.textContent = "继续";
+  } else if (game.state === "paused") {
+    game.state = "playing";
+    pauseHud.classList.add("hidden");
+    pauseBtn.textContent = "暂停";
+    game.lastT = performance.now() / 1000;
+  }
+}
+
+function updateHud() {
+  scoreEl.textContent = game.score;
+  comboEl.textContent = game.combo;
+}
+
+// ---------- 主循环 ----------
+function startLoop() {
+  if (running) return;
+  running = true;
+  const loop = () => {
+    requestAnimationFrame(loop);
+    const now = performance.now() / 1000;
+    const dt = game.lastT ? Math.min(now - game.lastT, 0.05) : 0.016;
+    game.lastT = now;
+    if (game.state === "paused") { draw(); return; }   // 暂停：画面冻结，随时可继续
+    detect();
+    update(dt);
+    draw();
+  };
+  loop();
+}
+
+function detect() {
+  if (DEMO) return;
+  if (!handLandmarker || video.readyState < 2) return;
+  if (video.currentTime === lastVideoTime) return;
+  lastVideoTime = video.currentTime;
+  const now = performance.now();
+  const t0 = performance.now();
+  const res = handLandmarker.detectForVideo(video, now);
+  lastInferMs = Math.round(performance.now() - t0);
+  if (lastDetectAt) {
+    const inst = 1000 / (now - lastDetectAt);
+    fpsSmooth = fpsSmooth ? fpsSmooth * 0.85 + inst * 0.15 : inst;
+    fpsEl.textContent = Math.round(fpsSmooth);
+  }
+  lastDetectAt = now;
+  lastHands = (res && res.landmarks) || [];
+}
+
+
+// ---------- 切中判定 ----------
+function segDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+// 手的命中点：掌心
+let prevHands = [];   // 上一帧每只手的掌心位置，用来判定挥动线段
+
+function handPoint(hand, m) {
+  const p = hand[9] || hand[0];
+  if (!p) return null;
+  return { x: p.x * m.w + m.ox, y: p.y * m.h + m.oy };
+}
+
+// 整条拖尾（含光晕宽度）碰到水果就算切中，判定放得很宽
+function checkTrailHits() {
+  const dpr = DPR();
+  const hitR = 26 * dpr;   // 光带半宽 + 余量
+  for (const arr of trails) {
+    if (!arr || !arr.length) continue;
+    if (arr.length === 1) {
+      const p = arr[0];
+      for (const o of game.objects) {
+        if (o.sliced) continue;
+        if (Math.hypot(o.x - p.x, o.y - p.y) < o.r + hitR) sliceObject(o);
+      }
+      continue;
+    }
+    for (let i = 1; i < arr.length; i++) {
+      const a = arr[i - 1], b = arr[i];
+      for (const o of game.objects) {
+        if (o.sliced) continue;
+        if (segDist(o.x, o.y, a.x, a.y, b.x, b.y) < o.r + hitR) {
+          sliceObject(o);
+        }
+      }
+    }
+  }
+}
+
+function handleBlades(m, nowSec) {
+  const dpr = DPR();
+  // 轨迹按时间衰减
+  for (let i = 0; i < trails.length; i++) {
+    const arr = trails[i];
+    while (arr.length && nowSec - arr[0].t > 0.6) arr.shift();
+  }
+
+  if (DEMO) {
+    if (!demo.inside) { prevHands[0] = null; return; }
+    const cur = { x: demo.cx, y: demo.cy };
+    (trails[0] = trails[0] || []).push({ x: cur.x, y: cur.y, t: nowSec });
+    prevHands[0] = cur;
+    if (game.state === "playing") checkTrailHits();
+    return;
+  }
+
+  for (let h = 0; h < Math.min(lastHands.length, 2); h++) {
+    const cur = handPoint(lastHands[h], m);
+    if (!cur) continue;
+    (trails[h] = trails[h] || []).push({ x: cur.x, y: cur.y, t: nowSec });
+    prevHands[h] = cur;
+  }
+  // 手离开画面后清掉记录，避免下次出现时拉出一条长线
+  for (let h = lastHands.length; h < 2; h++) prevHands[h] = null;
+
+  if (game.state === "playing") checkTrailHits();
+}
+
+function sliceObject(o) {
+  o.sliced = true;
+  const dpr = DPR();
+  if (o.kind === "bomb") {
+    beep("bomb");
+    flash.style.opacity = "0.85";
+    setTimeout(() => (flash.style.opacity = "0"), 140);
+    burst(o.x, o.y, "#f97316", 26, 420 * dpr);
+    game.objects = game.objects.filter(x => x !== o);
+    // 无限模式：炸弹只扣分并打断连击，不会结束游戏
+    game.score = Math.max(0, game.score - 5);
+    game.combo = 0;
+    game.comboTimer = 0;
+    game.shake = 0.6;
+    updateHud();
+    return;
+  }
+
+  beep("slice");
+  game.score += 1 + Math.floor(game.combo / 4);
+  game.combo += 1;
+  game.comboTimer = 0.45;
+  game.best = Math.max(game.best, game.combo);
+  updateHud();
+
+  // 分成两半飞出去
+  for (const dir of [-1, 1]) {
+    game.halves.push({
+      x: o.x, y: o.y,
+      vx: o.vx * 0.5 + dir * 170 * dpr,
+      vy: o.vy * 0.5 - 60 * dpr,
+      rot: Math.random() * Math.PI, vr: dir * (2 + Math.random() * 2),
+      r: o.r, type: o.type, dir
+    });
+  }
+  burst(o.x, o.y, FRUITS[o.type].flesh, 14, 260 * dpr);
+  game.objects = game.objects.filter(x => x !== o);
+}
+
+function burst(x, y, color, n, speed) {
+  const dpr = DPR();
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = (0.3 + Math.random()) * speed;
+    game.particles.push({
+      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 80 * dpr,
+      life: 0.5 + Math.random() * 0.4, max: 0.9,
+      r: (1.5 + Math.random() * 3) * dpr, color
+    });
+  }
+}
+
+// ---------- 物理 ----------
+function spawnWave() {
+  const dpr = DPR();
+  const w = W();
+  const count = 1 + (Math.random() < 0.45 ? 1 : 0) + (game.score > 12 && Math.random() < 0.3 ? 1 : 0);
+  for (let i = 0; i < count; i++) {
+    const isBomb = Math.random() < Math.min(0.2, 0.06 + game.score * 0.004);
+    const x = w * (0.15 + Math.random() * 0.7);
+    const vy = -(1050 + Math.random() * 250) * dpr;
+    const vx = (w / 2 - x) * (0.35 + Math.random() * 0.3);
+    game.objects.push({
+      kind: isBomb ? "bomb" : "fruit",
+      type: isBomb ? null : FRUIT_NAMES[(Math.random() * FRUIT_NAMES.length) | 0],
+      x, y: H() + 40 * dpr,
+      r: (isBomb ? 26 : 30 + Math.random() * 10) * dpr,
+      vx, vy, rot: 0, vr: (Math.random() - 0.5) * 3,
+      sliced: false
+    });
+  }
+}
+
+function update(dt) {
+  const dpr = DPR();
+  const nowSec = performance.now() / 1000;
+  const m = videoMap();
+  game.shake = Math.max(0, game.shake - dt * 2.5);
+  handleBlades(m, nowSec);
+
+  if (game.state !== "playing") {
+    // 结束时也让残骸淡出
+    stepPhysics(dt, false);
+    return;
+  }
+
+  game.spawnTimer += dt;
+  if (game.spawnTimer >= game.spawnEvery) {
+    game.spawnTimer = 0;
+    game.spawnEvery = Math.max(0.85, 1.7 - game.score * 0.015);
+    spawnWave();
+  }
+
+  if (game.comboTimer > 0) {
+    game.comboTimer -= dt;
+    if (game.comboTimer <= 0) { game.combo = 0; updateHud(); }
+  }
+
+  stepPhysics(dt, true);
+}
+
+function stepPhysics(dt, penalize) {
+  const dpr = DPR();
+  for (let i = game.objects.length - 1; i >= 0; i--) {
+    const o = game.objects[i];
+    o.vy += GRAVITY * dpr * dt;
+    o.x += o.vx * dt;
+    o.y += o.vy * dt;
+    o.rot += o.vr * dt;
+    if (o.y - o.r > H() + 60 * dpr) {
+      game.objects.splice(i, 1);
+      if (penalize && o.kind === "fruit") {
+        // 无限模式：漏果只断连击
+        game.combo = 0;
+        game.comboTimer = 0;
+        beep("miss");
+        updateHud();
+      }
+    }
+  }
+
+  for (let i = game.halves.length - 1; i >= 0; i--) {
+    const hf = game.halves[i];
+    hf.vy += GRAVITY * dpr * dt;
+    hf.x += hf.vx * dt;
+    hf.y += hf.vy * dt;
+    hf.rot += hf.vr * dt;
+    if (hf.y - hf.r > H() + 80 * dpr) game.halves.splice(i, 1);
+  }
+
+  for (let i = game.particles.length - 1; i >= 0; i--) {
+    const p = game.particles[i];
+    p.vy += 500 * dpr * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.life -= dt;
+    if (p.life <= 0) game.particles.splice(i, 1);
+  }
+}
+
+// ---------- 绘制 ----------
+function drawOrb(x, y, tNow) {
+  const dpr = DPR();
+  const pulse = 1 + 0.07 * Math.sin(tNow * 6);
+  const R = 34 * dpr * pulse;
+  // 外圈光晕
+  const g = ctx.createRadialGradient(x, y, 0, x, y, R);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.3, "rgba(165,243,252,.95)");
+  g.addColorStop(0.62, "rgba(56,189,248,.5)");
+  g.addColorStop(1, "rgba(56,189,248,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, R, 0, Math.PI * 2);
+  ctx.fill();
+  // 中心亮点
+  ctx.fillStyle = "rgba(255,255,255,.98)";
+  ctx.beginPath();
+  ctx.arc(x, y, 12 * dpr, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function draw() {
+  const w = W(), h = H(), dpr = DPR();
+  ctx.clearRect(0, 0, w, h);
+  ctx.save();
+  if (game.shake > 0) {
+    const s = game.shake * 12 * dpr;
+    ctx.translate((Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
+  }
+
+  // 手的挥动轨迹（发光刀光）
+  for (let t = 0; t < trails.length; t++) {
+    const arr = trails[t];
+    if (!arr || arr.length < 2) continue;
+    ctx.save();
+    ctx.shadowColor = "rgba(56,189,248,.9)";
+    ctx.shadowBlur = 16 * dpr;
+    ctx.lineCap = "round";
+    for (let i = 1; i < arr.length; i++) {
+      const a = arr[i - 1], b = arr[i];
+      const k = i / arr.length;
+      ctx.strokeStyle = `rgba(186,230,253,${0.12 + k * 0.8})`;
+      ctx.lineWidth = (4 + k * 18) * dpr;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // 半块水果
+  for (const hf of game.halves) {
+    const f = FRUITS[hf.type];
+    ctx.save();
+    ctx.translate(hf.x, hf.y);
+    ctx.rotate(hf.rot);
+    ctx.beginPath();
+    ctx.arc(0, 0, hf.r, hf.dir > 0 ? -Math.PI / 2 : Math.PI / 2, hf.dir > 0 ? Math.PI / 2 : Math.PI * 1.5);
+    ctx.closePath();
+    ctx.fillStyle = f.flesh;
+    ctx.fill();
+    ctx.strokeStyle = f.rind;
+    ctx.lineWidth = 5 * dpr;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 水果 / 炸弹
+  for (const o of game.objects) {
+    if (o.kind === "bomb") {
+      ctx.save();
+      ctx.translate(o.x, o.y);
+      ctx.rotate(o.rot);
+      // 引信
+      ctx.strokeStyle = "#9ca3af";
+      ctx.lineWidth = 3 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(0, -o.r);
+      ctx.quadraticCurveTo(o.r * 0.5, -o.r * 1.6, o.r * 0.2, -o.r * 2);
+      ctx.stroke();
+      // 火花
+      const spark = 3 + Math.random() * 3;
+      ctx.fillStyle = "#fbbf24";
+      ctx.beginPath();
+      ctx.arc(o.r * 0.2, -o.r * 2, spark * dpr, 0, Math.PI * 2);
+      ctx.fill();
+      // 球体
+      const g = ctx.createRadialGradient(-o.r * 0.3, -o.r * 0.3, o.r * 0.2, 0, 0, o.r);
+      g.addColorStop(0, "#4b5563");
+      g.addColorStop(1, "#0b0e13");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, o.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(239,68,68,.7)";
+      ctx.lineWidth = 2 * dpr;
+      ctx.stroke();
+      ctx.restore();
+      continue;
+    }
+
+    const f = FRUITS[o.type];
+    ctx.save();
+    ctx.translate(o.x, o.y);
+    ctx.rotate(o.rot);
+    const g = ctx.createRadialGradient(-o.r * 0.35, -o.r * 0.35, o.r * 0.15, 0, 0, o.r);
+    g.addColorStop(0, f.flesh);
+    g.addColorStop(0.55, f.rind);
+    g.addColorStop(1, f.rind);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, o.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,.25)";
+    ctx.lineWidth = 2 * dpr;
+    ctx.beginPath();
+    ctx.arc(0, 0, o.r * 0.72, -0.6, 0.6);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 果汁粒子
+  for (const p of game.particles) {
+    ctx.globalAlpha = Math.max(0, p.life / p.max);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // 手部关键点（淡）+ 刀刃点（亮）
+  // 状态提示
+  if (DEMO) {
+    trackEl.textContent = "演示模式 · 不识别手（点上方黄条切换）";
+    trackEl.classList.add("ok");
+  } else if (!video.videoWidth) {
+    trackEl.textContent = "摄像头没有画面 · 检查授权";
+    trackEl.classList.remove("ok");
+  } else if (lastHands.length) {
+    trackEl.textContent = "✋ 已追踪 " + lastHands.length + " 只手 · 推理 " + lastInferMs + "ms";
+    trackEl.classList.add("ok");
+  } else {
+    trackEl.textContent = "画面正常（" + video.videoWidth + "×" + video.videoHeight +
+      "）· 未识别到手 · 推理 " + lastInferMs + "ms";
+    trackEl.classList.remove("ok");
+  }
+
+  if (lastHands.length) {
+    const m = videoMap();
+    const tNow = performance.now() / 1000;
+    for (const hand of lastHands) {
+      const p = hand[9] || hand[0];
+      if (!p) continue;
+      drawOrb(p.x * m.w + m.ox, p.y * m.h + m.oy, tNow);
+    }
+    hint.classList.remove("show");
+  } else if (DEMO && demo.inside) {
+    drawOrb(demo.cx, demo.cy, performance.now() / 1000);
+  } else if (running && game.state === "playing" && !DEMO) {
+    hint.classList.add("show");
+  }
+  ctx.restore();
+}
+
+// ---------- 事件 ----------
+startBtn.onclick = () => { startGame(); };
+
+function toggleFullscreen() {
+  const el = document.documentElement;
+  const isFs = document.fullscreenElement || document.webkitFullscreenElement;
+  try {
+    if (isFs) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } else {
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      const p = req && req.call(el);
+      if (p && p.catch) p.catch(() => {});
+    }
+  } catch (e) {}
+}
+
+function syncFsBtn() {
+  const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  fsBtn.textContent = isFs ? "⤡" : "⛶";
+  fsBtn.title = isFs ? "退出全屏（F）" : "全屏（F）";
+  setTimeout(resize, 60);   // 全屏切换后画布尺寸要重算
+}
+
+fsBtn.onclick = toggleFullscreen;
+document.addEventListener("fullscreenchange", syncFsBtn);
+document.addEventListener("webkitfullscreenchange", syncFsBtn);
+
+pauseBtn.onclick = togglePause;
+resumeBtn.onclick = togglePause;
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Space") {
+    e.preventDefault();
+    togglePause();
+  } else if (e.key === "f" || e.key === "F") {
+    e.preventDefault();
+    toggleFullscreen();
+  }
+});
+
+hudStart.onclick = () => {
+  initCamera().catch(err => {
+    hudStart.disabled = false;
+    const reason = err && err.message ? err.message : String(err);
+    hudMsg.textContent = "摄像头不可用：" + reason +
+      "。内置浏览器经常拿不到摄像头权限，请用 Safari 或 Chrome 打开 http://127.0.0.1:8790/fruit.html";
+    hudStart.textContent = "先用演示模式（鼠标，不识别手）";
+    hudStart.onclick = () => { location.href = "./fruit.html?demo=1"; };
+  });
+};
+
+if (DEMO) initCamera().catch(() => {});
+</script>
+</body>
+</html>

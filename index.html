@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>接气球 · 体感小游戏</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0b0e13; color: #e8ecf3; font: 15px/1.5 -apple-system, "PingFang SC", sans-serif;
+         height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; background: #12161d;
+           border-bottom: 1px solid #212836; flex: none; font-size: 14px; }
+  header .brand { font-weight: 600; }
+  header .spacer { flex: 1; }
+  header .stat { color: #8b97a8; font-variant-numeric: tabular-nums; }
+  header .stat b { color: #e8ecf3; font-size: 16px; }
+  header button { background: #2563eb; color: #fff; border: 0; border-radius: 8px;
+                  padding: 7px 16px; font-size: 14px; cursor: pointer; }
+  header button:disabled { opacity: .45; cursor: default; }
+  #stage { position: relative; flex: 1; overflow: hidden; background: #000; }
+  #video, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #video { object-fit: cover; transform: scaleX(-1); opacity: .55; }
+  #overlay { transform: scaleX(-1); }
+  #hud { position: absolute; inset: 0; display: flex; flex-direction: column;
+         align-items: center; justify-content: center; text-align: center; gap: 14px;
+         background: rgba(6, 9, 14, .82); backdrop-filter: blur(4px); padding: 24px; }
+  #hud.hidden { display: none; }
+  #hud h1 { font-size: 26px; font-weight: 700; }
+  #hud p { color: #9aa7b8; max-width: 460px; line-height: 1.7; }
+  #hud .actions { display: flex; gap: 10px; margin-top: 6px; }
+  #hud button { background: #2563eb; color: #fff; border: 0; border-radius: 10px;
+                padding: 12px 26px; font-size: 16px; cursor: pointer; }
+  #hud button:disabled { opacity: .5; cursor: default; }
+  #hint { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+          background: rgba(10, 14, 20, .8); border: 1px solid #263041; border-radius: 10px;
+          padding: 8px 16px; font-size: 13px; color: #9aa7b8; white-space: nowrap; display: none; }
+  #hint.show { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">接气球 · 体感</div>
+  <div class="spacer"></div>
+  <div class="stat">得分 <b id="score">0</b></div>
+  <div class="stat">连击 <b id="combo">0</b></div>
+  <div class="stat">剩余 <b id="time">0</b>s</div>
+  <div class="stat">FPS <b id="fps">-</b></div>
+  <a href="./fruit.html" style="color:#6b7686;text-decoration:none;font-size:13px">切水果 →</a>
+  <button id="startBtn" disabled>开始</button>
+</header>
+
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="overlay"></canvas>
+  <div id="hint">没检测到手，退后一点让上半身入镜，或把手抬到胸前</div>
+  <div id="hud">
+    <h1>接气球</h1>
+    <p>把双手抬到胸前，用身体左右移动，让下面的篮子接住落下的气球。<br>
+       相机画面只在本机处理，不会上传。</p>
+    <p id="hudMsg" style="color:#f59e0b;min-height:22px"></p>
+    <div class="actions">
+      <button id="hudStart">打开摄像头开始</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { FilesetResolver, PoseLandmarker } from "./vision_bundle.mjs";
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("overlay");
+const ctx = canvas.getContext("2d");
+const hud = document.getElementById("hud");
+const hudMsg = document.getElementById("hudMsg");
+const startBtn = document.getElementById("startBtn");
+const hudStart = document.getElementById("hudStart");
+const scoreEl = document.getElementById("score");
+const comboEl = document.getElementById("combo");
+const timeEl = document.getElementById("time");
+const fpsEl = document.getElementById("fps");
+const hint = document.getElementById("hint");
+
+const CONNECTIONS = [
+  [11,12],[11,13],[13,15],[12,14],[14,16],
+  [11,23],[12,24],[23,24],
+  [23,25],[25,27],[24,26],[26,28],
+  [27,29],[27,31],[29,31],[28,30],[28,32],[30,32]
+];
+
+let landmarker = null;
+let running = false;
+let lastVideoTime = -1;
+let lastFrame = null;
+let lastDetectAt = 0;
+let fpsSmooth = 0;
+
+const game = {
+  state: "idle",     // idle | playing | over
+  score: 0, combo: 0, best: 0,
+  timeLeft: 0,
+  balloons: [],
+  spawnTimer: 0, spawnEvery: 0.75,
+  basketX: 0, basketY: 0, basketW: 150,
+  handSeenAt: 0,
+  lastT: 0
+};
+
+const W = () => canvas.width;
+const H = () => canvas.height;
+const DPR = () => Math.min(window.devicePixelRatio || 1, 2);
+
+function resize() {
+  const r = document.getElementById("stage").getBoundingClientRect();
+  const dpr = DPR();
+  canvas.width = Math.round(r.width * dpr);
+  canvas.height = Math.round(r.height * dpr);
+  game.basketY = canvas.height - 78 * dpr;
+  game.basketW = 150 * dpr;
+  if (!game.basketX) game.basketX = canvas.width / 2;
+}
+
+// video 用 object-fit: cover 铺满，landmark 是 0~1 的原始比例，需要映射到 cover 后的区域
+function videoMap() {
+  const sw = W(), sh = H();
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const scale = Math.max(sw / vw, sh / vh);
+  const w = vw * scale, h = vh * scale;
+  return { ox: (sw - w) / 2, oy: (sh - h) / 2, w, h };
+}
+const mapX = (p, m) => p.x * m.w + m.ox;
+const mapY = (p, m) => p.y * m.h + m.oy;
+
+async function initCamera() {
+  hudStart.disabled = true;
+  hudMsg.textContent = "正在启动摄像头…";
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+    audio: false
+  });
+  video.srcObject = stream;
+  await video.play();
+  resize();
+  window.addEventListener("resize", resize);
+
+  hudMsg.textContent = "正在加载姿态模型…";
+  const fileset = await FilesetResolver.forVisionTasks("./wasm");
+  landmarker = await PoseLandmarker.createFromOptions(fileset, {
+    baseOptions: {
+      modelAssetPath: "./models/pose_landmarker_lite.task",
+      delegate: "GPU"
+    },
+    runningMode: "VIDEO",
+    numPoses: 1,
+    minPoseDetectionConfidence: 0.5,
+    minPosePresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+
+  hudMsg.textContent = "";
+  hud.querySelector("h1").textContent = "准备好了";
+  hud.querySelector("p").innerHTML = "站到离摄像头 1.5~2 米处，让上半身入镜。<br>点开始后，用双手位置控制篮子。";
+  hudStart.textContent = "开始游戏";
+  hudStart.disabled = false;
+  hudStart.onclick = startGame;
+  startBtn.disabled = false;
+  startLoop();
+}
+
+function startGame() {
+  game.state = "playing";
+  game.score = 0; game.combo = 0; game.best = 0;
+  game.balloons = [];
+  game.spawnTimer = 0; game.spawnEvery = 0.75;
+  game.timeLeft = 40;
+  hud.classList.add("hidden");
+  startBtn.textContent = "结束";
+  updateHud();
+}
+
+function endGame() {
+  game.state = "over";
+  hud.classList.remove("hidden");
+  hud.querySelector("h1").textContent = "时间到";
+  hud.querySelector("p").innerHTML = `你接住了 <b style="color:#4ade80">${game.score}</b> 个气球，最高连击 ${game.best}。`;
+  hudStart.textContent = "再来一局";
+  hudStart.onclick = startGame;
+  startBtn.textContent = "开始";
+}
+
+function updateHud() {
+  scoreEl.textContent = game.score;
+  comboEl.textContent = game.combo;
+  timeEl.textContent = Math.ceil(game.timeLeft);
+}
+
+function startLoop() {
+  if (running) return;
+  running = true;
+  const loop = () => {
+    requestAnimationFrame(loop);
+    const now = performance.now() / 1000;
+    const dt = game.lastT ? Math.min(now - game.lastT, 0.1) : 0.016;
+    game.lastT = now;
+
+    detect();
+    draw();
+    if (game.state === "playing") stepGame(dt);
+  };
+  loop();
+}
+
+function detect() {
+  if (!landmarker || video.readyState < 2) return;
+  if (video.currentTime === lastVideoTime) return;  // 只在新视频帧上推理
+  lastVideoTime = video.currentTime;
+  const now = performance.now();
+  const res = landmarker.detectForVideo(video, now);
+  if (lastDetectAt) {
+    const inst = 1000 / (now - lastDetectAt);
+    fpsSmooth = fpsSmooth ? fpsSmooth * 0.85 + inst * 0.15 : inst;
+    fpsEl.textContent = Math.round(fpsSmooth);
+  }
+  lastDetectAt = now;
+  lastFrame = (res && res.landmarks && res.landmarks.length) ? res.landmarks[0] : null;
+}
+
+function handX(frame) {
+  if (!frame) return null;
+  const l = frame[15], r = frame[16];
+  const lv = l && (l.visibility ?? 1) > 0.4;
+  const rv = r && (r.visibility ?? 1) > 0.4;
+  if (lv && rv) return (l.x + r.x) / 2;
+  if (lv) return l.x;
+  if (rv) return r.x;
+  return null;
+}
+
+function draw() {
+  const w = W(), h = H(), dpr = DPR();
+  ctx.clearRect(0, 0, w, h);
+  const m = videoMap();
+  const frame = lastFrame;
+
+  if (frame) {
+    const hx = handX(frame);
+    const now = performance.now() / 1000;
+    if (hx !== null) {
+      game.handSeenAt = now;
+      game.basketX = game.basketX * 0.75 + (hx * m.w + m.ox) * 0.25;
+      hint.classList.remove("show");
+    } else if (now - game.handSeenAt > 1.2) {
+      hint.classList.add("show");
+    }
+
+    ctx.lineWidth = 3 * dpr;
+    ctx.strokeStyle = "rgba(74,222,128,.85)";
+    ctx.beginPath();
+    for (const [a, b] of CONNECTIONS) {
+      const p = frame[a], q = frame[b];
+      if (!p || !q || (p.visibility ?? 1) < 0.4 || (q.visibility ?? 1) < 0.4) continue;
+      ctx.moveTo(mapX(p, m), mapY(p, m));
+      ctx.lineTo(mapX(q, m), mapY(q, m));
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(96,165,250,.95)";
+    for (let i = 0; i < frame.length; i++) {
+      const p = frame[i];
+      if (!p || (p.visibility ?? 1) < 0.4) continue;
+      ctx.beginPath();
+      ctx.arc(mapX(p, m), mapY(p, m), (i === 15 || i === 16 ? 7 : 3.5) * dpr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (performance.now() / 1000 - game.handSeenAt > 1.2) {
+    hint.classList.add("show");
+  }
+
+  if (game.state === "playing") {
+    const bx = game.basketX, by = game.basketY, bw = game.basketW;
+    ctx.fillStyle = "rgba(37,99,235,.9)";
+    ctx.strokeStyle = "rgba(147,197,253,.9)";
+    ctx.lineWidth = 3 * dpr;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx - bw / 2, by, bw, 46 * dpr, 10 * dpr);
+    else ctx.rect(bx - bw / 2, by, bw, 46 * dpr);
+    ctx.fill(); ctx.stroke();
+
+    for (const b of game.balloons) {
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.ellipse(b.x, b.y, b.r, b.r * 1.18, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,.35)";
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(b.x, b.y + b.r * 1.18);
+      ctx.lineTo(b.x + Math.sin(b.y / 26) * 6 * dpr, b.y + b.r * 1.18 + 18 * dpr);
+      ctx.stroke();
+    }
+  }
+}
+
+function stepGame(dt) {
+  game.timeLeft -= dt;
+  if (game.timeLeft <= 0) { game.timeLeft = 0; updateHud(); endGame(); return; }
+
+  const dpr = DPR();
+  game.spawnTimer += dt;
+  game.spawnEvery = Math.max(0.38, 0.75 - game.score * 0.012);
+  if (game.spawnTimer >= game.spawnEvery) {
+    game.spawnTimer = 0;
+    const colors = ["#f87171", "#fbbf24", "#34d399", "#60a5fa", "#c084fc", "#f472b6"];
+    game.balloons.push({
+      x: (0.12 + Math.random() * 0.76) * W(),
+      y: -40 * dpr,
+      r: (16 + Math.random() * 8) * dpr,
+      vy: (150 + Math.random() * 70 + game.score * 4) * dpr,
+      color: colors[(Math.random() * colors.length) | 0]
+    });
+  }
+
+  const bx = game.basketX, by = game.basketY, half = game.basketW / 2;
+  for (let i = game.balloons.length - 1; i >= 0; i--) {
+    const b = game.balloons[i];
+    b.y += b.vy * dt;
+    if (b.y + b.r >= by && Math.abs(b.x - bx) <= half + b.r * 0.4) {
+      game.balloons.splice(i, 1);
+      game.score += 1;
+      game.combo += 1;
+      game.best = Math.max(game.best, game.combo);
+      updateHud();
+    } else if (b.y > H()) {
+      game.balloons.splice(i, 1);
+      game.combo = 0;
+      updateHud();
+    }
+  }
+  updateHud();
+}
+
+startBtn.onclick = () => {
+  if (game.state === "playing") { endGame(); return; }
+  startGame();
+};
+
+hudStart.onclick = () => {
+  initCamera().catch(err => {
+    hudStart.disabled = false;
+    hudMsg.textContent = "启动失败：" + (err && err.message ? err.message : err) +
+      "（请在 Mac 上用 http://127.0.0.1:8790 打开，摄像头需要安全上下文）";
+  });
+};
+</script>
+</body>
+</html>
