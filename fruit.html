@@ -321,32 +321,42 @@ async function initCamera() {
     minHandPresenceConfidence: 0.25,
     minTrackingConfidence: 0.25
   };
-  const attempt = (delegate, timeoutMs) => {
-    const p = HandLandmarker.createFromOptions(fileset, {
-      ...opts,
-      baseOptions: { modelAssetPath: modelUrl, delegate }
-    });
-    p.catch(() => {});
-    const timer = new Promise((_, rej) => setTimeout(
-      () => rej(new Error(delegate + " 初始化超过 " + Math.round(timeoutMs / 1000) + " 秒")), timeoutMs));
-    return Promise.race([p, timer]);
-  };
-  try {
-    handLandmarker = await attempt("GPU", 25000);
-  } catch (e1) {
-    setStatus("GPU 初始化超时，改用 CPU 重试（会慢一些）…");
-    try {
-      handLandmarker = await attempt("CPU", 45000);
-    } catch (e2) {
-      if (modelUrl !== "./models/hand_landmarker.task") {
-        // 下载到的内容可能不完整，退回让框架自己按 URL 取
-        modelUrl = "./models/hand_landmarker.task";
-        setStatus("改用原始地址加载模型…");
-        handLandmarker = await attempt("CPU", 45000);
-      } else {
-        throw e2;
+
+  // 默认 CPU：GPU 委派在部分浏览器（尤其加载自公网时）会失败或很慢。
+  // 想要 GPU 加速可加 ?gpu=1
+  const gpuFirst = new URLSearchParams(location.search).has("gpu");
+  const order = gpuFirst
+    ? [["GPU", 25000], ["CPU", 45000]]
+    : [["CPU", 45000], ["GPU", 25000]];
+
+  const initWith = async (modelPath) => {
+    for (const [delegate, timeoutMs] of order) {
+      try {
+        setStatus("正在初始化手势模型（" + delegate + (delegate === "CPU" ? "，首次稍慢" : "") + "）…");
+        const p = HandLandmarker.createFromOptions(fileset, {
+          ...opts,
+          baseOptions: { modelAssetPath: modelPath, delegate }
+        });
+        p.catch(() => {});
+        const timer = new Promise((_, rej) => setTimeout(
+          () => rej(new Error(delegate + " 初始化超过 " + Math.round(timeoutMs / 1000) + " 秒")), timeoutMs));
+        return await Promise.race([p, timer]);
+      } catch (e) {
+        // 试下一种
       }
     }
+    return null;
+  };
+
+  handLandmarker = await initWith(modelUrl);
+  if (!handLandmarker && modelUrl !== "./models/hand_landmarker.task") {
+    // 下载到的内容可能不完整，退回让框架自己按 URL 取
+    modelUrl = "./models/hand_landmarker.task";
+    setStatus("改用原始地址加载模型…");
+    handLandmarker = await initWith(modelUrl);
+  }
+  if (!handLandmarker) {
+    throw new Error("模型初始化失败（CPU 与 GPU 都不可用）");
   }
 
   setStatus("");
