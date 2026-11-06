@@ -32,6 +32,8 @@
   #hud h1 { font-size: 28px; font-weight: 700; }
   #hud p { color: #9aa7b8; max-width: 500px; line-height: 1.75; }
   #hud .tips { font-size: 13px; color: #6f7c8f; }
+  #hud .visits { font-size: 12.5px; color: #6f7c8f; }
+  #hud .visits b { color: #9aa7b8; }
   #hud .actions { display: flex; gap: 10px; margin-top: 6px; }
   #hud button { background: #2563eb; color: #fff; border: 0; border-radius: 10px;
                 padding: 12px 26px; font-size: 16px; cursor: pointer; }
@@ -91,6 +93,7 @@
        炸弹扣 5 分并打断连击，漏掉水果只断连击。</p>
     <p class="tips">站到离镜头 1~1.5 米，光线充足，手掌正对镜头挥动更灵敏。按空格暂停，按 F 全屏。</p>
     <p id="hudMsg" style="color:#f59e0b;min-height:22px"></p>
+    <p class="visits" id="visitLine" hidden>本站访问 <b id="busuanzi_value_site_pv">-</b> 次 · 访客 <b id="busuanzi_value_site_uv">-</b> 人</p>
     <div class="actions">
       <button id="hudStart">打开摄像头开始</button>
       <button id="hudDemo" class="ghost hidden">鼠标演示（不识别手）</button>
@@ -880,6 +883,16 @@ hudStart.onclick = startCamera;
 hudDemo.onclick = () => { location.href = "./fruit.html?demo=1"; };
 
 if (DEMO) initCamera().catch(() => {});
+
+// 访问统计（不蒜子）：只在 GitHub Pages 生产域名启用，本地/隧道不统计，避免污染数据
+if (location.hostname.endsWith("github.io")) {
+  const line = document.getElementById("visitLine");
+  if (line) line.hidden = false;
+  const s = document.createElement("script");
+  s.async = true;
+  s.src = "https://busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js";
+  document.body.appendChild(s);
+}
 </script>
 </body>
 </html>
